@@ -1,0 +1,3 @@
+# 服务名              SELinux 类型
+agent                 u:object_r:agent_service:s0
+agent_core            u:object_r:agent_core_service:s0

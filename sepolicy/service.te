@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# system_server 发布的服务名 "agent"
+type agent_service, app_api_service, service_manager_type;
+add_service(system_server, agent_service)
+
+# /system/bin/agentd 发布的服务名 "agent_core"
+# 只声明类型;add_service 规则在 agentd.te 里(谁注册谁写)
+type agent_core_service, app_api_service, service_manager_type;

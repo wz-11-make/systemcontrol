@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: Apache-2.0
+cc_binary {
+    name: "agentd",
+    srcs: [
+        "main.cpp",
+        "AgentCoreService.cpp",
+        "Engine.cpp",
+    ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+    shared_libs: [
+        "android.system.agent.control-ndk",
+        "libbase",
+        "libbinder_ndk",
+        "liblog",
+    ],
+    init_rc: ["agentd.rc"],
+    strip: { none: true },
+}

@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# 必须进 appdomain,才能白拿标准 app 权限
+# (app.te:420/422 已有 binder_call(appdomain, binderservicedomain/appdomain))
+type agent_app, domain, appdomain;
+
+# 找得到两个服务
+allow agent_app agent_service:service_manager find;
+allow agent_app agent_core_service:service_manager find;
+
+# 双向:app 调 agentd,agentd 回调 app
+binder_call(agent_app, agentd)
+binder_call(agentd, agent_app)

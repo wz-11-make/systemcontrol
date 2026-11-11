@@ -1,0 +1,12 @@
+# agentd —— 推理守护进程
+# 刻意不加 oneshot:崩了让 init 自动拉起。
+# 也刻意不加 critical:崩了不该重启整机。
+service agentd /system/bin/agentd
+    class late_start
+    user system
+    group system
+
+# 模型/状态目录:DE 加密,解锁前就可用(agentd 是系统级,不跟用户走)
+on post-fs-data
+    mkdir /data/misc/agent 0770 system system
+    restorecon_recursive /data/misc/agent

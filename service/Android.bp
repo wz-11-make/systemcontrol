@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// 这个 java_library 会被 frameworks/base/services/Android.bp 的 services.impl
+// 加进 static_libs,从而被编进 services.jar,由 system_server 加载。
+// libs(而非 static_libs)引用 services.core,避免与 services.impl 重复打包。
+java_library {
+    name: "agent-service",
+    srcs: ["src/**/*.java"],
+    libs: [
+        "services.core",
+    ],
+    static_libs: [
+        "android.system.agent.control-java",
+    ],
+}

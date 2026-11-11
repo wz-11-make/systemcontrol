@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+
+type agentd, domain, coredomain;
+type agentd_exec, exec_type, file_type, system_file_type;
+
+init_daemon_domain(agentd)
+
+# 注册 /system/bin/agentd 提供的 binder 服务
+add_service(agentd, agent_core_service)
+
+# system_server 要能找到并调用它
+allow system_server agent_core_service:service_manager find;
+binder_call(system_server, agentd)
+
+# 模型/状态目录(/data/misc/agent,DE 加密,解锁前可用)
+allow agentd agent_data_file:dir create_dir_perms;
+allow agentd agent_data_file:file create_file_perms;

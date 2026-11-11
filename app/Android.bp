@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+android_app {
+    name: "Agent",
+    srcs: ["src/**/*.java"],
+    manifest: "AndroidManifest.xml",
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+    static_libs: [
+        "android.system.agent.control-java",
+    ],
+    optimize: {
+        enabled: false,
+    },
+}

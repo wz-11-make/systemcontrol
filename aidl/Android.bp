@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: Apache-2.0
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// 三方共用的唯一契约:UI <-> AgentService <-> agentd
+// unstable: true —— 自编译 ROM,不冻结 API,改接口不用走版本流程
+aidl_interface {
+    name: "android.system.agent.control",
+    unstable: true,
+    local_include_dir: ".",
+    srcs: ["android/system/agent/*.aidl"],
+    backend: {
+        java: {
+            sdk_version: "28",
+        },
+        ndk: {
+            min_sdk_version: "30",
+        },
+    },
+}
