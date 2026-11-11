@@ -82,43 +82,33 @@ shared_libs: ["libllama", "libggml"],
 | 取消 | ✅ 入队前生效 |
 | 中途打断 | ❌ 需要 llama.cpp abort callback |
 
-## 现在还缺的三处外部接线
+## 外部接线(已应用,可通过 patch 重放)
 
-骨架本身能编(`m Agent` / `m agentd` / `m android.system.agent.control-ndk`),
-但要让 `AgentService` 真的跑起来,需要动三处:
-
-### 1. `frameworks/base/services/Android.bp`
-
-在 `services.impl` 的 `static_libs` 里加一行:
+三处改动在 `vendor/agent/` 之外,已应用并导出成 patch:
 
 ```
-"agent-service",
+patches/
+├── apply.sh                                        repo sync 后重放
+├── 0001-frameworks-base-agent-service.patch        services.impl + SystemServer
+├── 0002-device-venus-product.patch                 device.mk inherit
+├── 0003-device-sm8350-sepolicy.patch               BOARD policy dir
+└── framework-wiring.md                             说明 + 坑位记录
 ```
 
-### 2. `frameworks/base/services/java/com/android/server/SystemServer.java`
-
-在 `startOtherServices()` 里合适位置加:
-
-```java
-mSystemServiceManager.startService(AgentService.class);
-```
-并加 import:
-
-```java
-import com.android.server.agent.AgentService;
+```bash
+bash vendor/agent/patches/apply.sh     # 幂等
 ```
 
-### 3. `device/xiaomi/venus/device.mk` 末尾
+### ⚠️ 必须刷两个镜像
 
-```makefile
-$(call inherit-product-if-exists, vendor/agent/agent.mk)
+policy 走 `SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS`,编译进 **system_ext 分区**:
+
+```bash
+m systemimage        # system/bin/agentd、Agent.apk、services.jar
+m systemextimage     # SELinux 策略
 ```
 
-以及 `device/xiaomi/sm8350-common/BoardConfigCommon.mk`:
-
-```makefile
-SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += vendor/agent/sepolicy
-```
+只刷 `system.img` → `agentd` 会被 SELinux 拦住,进程闪一下就没,`service list` 里空无一物。
 
 ## 构建顺序(别跳)
 
@@ -226,3 +216,26 @@ m Agent                                                                ✅
 - `AgentStatus` 增加 `queueDepth / modelBytes / lastErrorCode`
 - `daemon/` 从 3 个文件扩到 9 个:Worker、Engine 抽象、Mock、Llama
 - `AgentService` 真正连上 `agent_core`,带死亡通知与重连
+
+### 2026-11 第三轮:接线完成 + 镜像产出
+
+```
+m services            ✅  services.jar 内含 com/android/server/agent/AgentService
+m systemimage         ✅  system.img          1.05 GB
+m systemextimage      ✅  system_ext.img     448 MB(含 agent SELinux 策略)
+```
+
+刷机后验证:
+
+```bash
+adb shell service list | grep -E 'agent$|agent_core'
+```
+
+两行都在 = 三层全部注册成功。
+
+**踩到的坑:`coredomain` 访问 `/data/misc/*` 必须给类型加 `core_data_file_type`**,
+否则 `full_treble_only` 的 neverallow(domain.te:1069/1091)直接拦。
+
+```te
+type agent_data_file, file_type, data_file_type, core_data_file_type;
+```

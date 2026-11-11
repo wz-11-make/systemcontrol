@@ -1,0 +1,37 @@
+diff --git a/services/Android.bp b/services/Android.bp
+index 7d3d37ca56b3..8cabfa31ff58 100644
+--- a/services/Android.bp
++++ b/services/Android.bp
+@@ -325,6 +325,7 @@ java_library {
+     // The convention is to name each service module 'services.$(module_name)'
+     static_libs: [
+         "services.core",
++        "agent-service",
+         "services.accessibility",
+         "services.appprediction",
+         "services.appwidget",
+diff --git a/services/java/com/android/server/SystemServer.java b/services/java/com/android/server/SystemServer.java
+index a184d6a7efe8..4d108657eca9 100644
+--- a/services/java/com/android/server/SystemServer.java
++++ b/services/java/com/android/server/SystemServer.java
+@@ -129,6 +129,7 @@ import com.android.server.am.ActivityManagerService;
+ import com.android.server.ambientcontext.AmbientContextManagerService;
+ import com.android.server.app.GameManagerService;
+ import com.android.server.appbinding.AppBindingService;
++import com.android.server.agent.AgentService;
+ import com.android.server.appfunctions.AppFunctionManagerService;
+ import com.android.server.apphibernation.AppHibernationService;
+ import com.android.server.appop.AppOpMigrationHelper;
+@@ -3622,6 +3623,12 @@ public final class SystemServer implements Dumpable {
+         }
+         t.traceEnd();
+ 
++        // On-device Agent:动作执行层。放在 startOtherServices 末尾,
++        // 因为它依赖 AMS / PMS 已就绪。
++        t.traceBegin("StartAgentService");
++        mSystemServiceManager.startService(AgentService.class);
++        t.traceEnd();
++
+         t.traceEnd(); // startOtherServices
+     }
+ 

@@ -53,14 +53,17 @@ public class AgentService extends SystemService {
     @Override
     public void onStart() {
         publishBinderService(SERVICE_NAME, mBinder);
-        Slog.i(TAG, "published binder service '" + SERVICE_NAME + "'");
+        // 在 onStart 里初始化,而不是等 onBootPhase(PHASE_SYSTEM_SERVICES_READY) ——
+        // 我们在 startOtherServices 末尾才被 startService,那时该 phase 可能已经过去了。
+        // OpenAppExecutor 只持有 Context,真正的 PMS 查询发生在 execute() 时。
+        mOpenApp = new OpenAppExecutor(mContext);
+        Slog.i(TAG, "published binder service '" + SERVICE_NAME + "', executors ready");
     }
 
     @Override
     public void onBootPhase(int phase) {
-        if (phase == PHASE_SYSTEM_SERVICES_READY) {
-            mOpenApp = new OpenAppExecutor(mContext);
-            Slog.i(TAG, "executors ready");
+        if (phase == PHASE_BOOT_COMPLETED) {
+            Slog.i(TAG, "boot completed");
         }
     }
 

@@ -1,0 +1,11 @@
+diff --git a/device.mk b/device.mk
+index 31b9234..c59603d 100644
+--- a/device.mk
++++ b/device.mk
+@@ -30,3 +30,6 @@ PRODUCT_COPY_FILES += \
+ 
+ # Call the proprietary setup
+ $(call inherit-product, vendor/xiaomi/venus/venus-vendor.mk)
++
++# On-device Agent (UI / AgentService / agentd)
++$(call inherit-product-if-exists, vendor/agent/agent.mk)
