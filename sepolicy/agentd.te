@@ -5,6 +5,11 @@ type agentd_exec, exec_type, file_type, system_file_type;
 
 init_daemon_domain(agentd)
 
+# 关键:调 servicemanager 注册 binder 服务。
+# 少了这行,addService 会被 SELinux 拦,
+# 现象是 agentd 一起就退、init 无限重启、service list 里什么都没有。
+binder_use(agentd)
+
 # 注册 /system/bin/agentd 提供的 binder 服务
 add_service(agentd, agent_core_service)
 

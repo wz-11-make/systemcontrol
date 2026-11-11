@@ -3,18 +3,18 @@
     package="com.android.agent">
 
     <application
-        android:label="Agent"
-        android:persistent="true"
-        android:directBootAware="true">
+        android:label="Agent">
 
+        <!-- 第一轮 bring-up 刻意不声明 HOME:
+             多一个 HOME 候选而没有默认项,系统启动时找不到 home -> 黑屏。
+             等服务层验证通过后再把 HOME intent-filter 加回来。 -->
         <activity
             android:name=".AgentActivity"
             android:exported="true"
             android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.HOME" />
-                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
     </application>

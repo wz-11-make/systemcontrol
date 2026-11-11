@@ -1,3 +1,0 @@
-# Agent.apk 用独立 domain,便于后续用 SELinux 精确收缩它的能力。
-# seinfo=platform 表示要求平台签名(Android.bp 里 certificate: "platform")。
-user=_app seinfo=platform name=com.android.agent domain=agent_app type=privapp_data_file levelFrom=all

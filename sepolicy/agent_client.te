@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# 用系统默认的 app domain,不建自定义 domain。
+#
+# 教训:给 Agent.apk 建独立 domain(agent_app)时,只加了两条 service find,
+# 结果连 activity_service 都找不到,ActivityThread.attach() 直接 NPE 崩溃。
+# 自定义 app domain 要补的权限是几十条,第一轮不划算。
+#
+# priv-app 默认落在 priv_app;platform 签名的也可能落在 platform_app,
+# 两个都覆盖。
+
+allow { priv_app platform_app } agent_service:service_manager find;
+allow { priv_app platform_app } agent_core_service:service_manager find;
+
+binder_call(priv_app, agentd)
+binder_call(platform_app, agentd)
+binder_call(agentd, priv_app)
+binder_call(agentd, platform_app)

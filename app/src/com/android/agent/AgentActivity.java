@@ -47,25 +47,32 @@ public class AgentActivity extends Activity {
         final IAgentService svc = IAgentService.Stub.asInterface(b);
         try {
             final AgentStatus s = svc.getStatus();
-            final StringBuilder sb = new StringBuilder();
-            sb.append("AgentService v").append(svc.getVersion()).append('\n')
-              .append("state=").append(s.state)
-              .append("  modelState=").append(s.modelState);
+            final String head = "AgentService v" + svc.getVersion()
+                    + "\nstate=" + s.state
+                    + "  modelState=" + s.modelState
+                    + "  err=" + s.lastErrorCode
+                    + "  queue=" + s.queueDepth;
+            // 立刻显示状态 —— 不能只在成功回调里设文字,否则出错时是白屏
+            mText.setText(head + "\n\n(推理中…)");
 
-            svc.processText(1L, "hello from ui", "ui", new IAgentServiceCallback.Stub() {
+            svc.processText(1L, "打开微信", "ui", new IAgentServiceCallback.Stub() {
                 @Override
                 public void onResult(long requestId, String summary, boolean needsConfirm) {
                     Log.i(TAG, "onResult id=" + requestId + " summary=" + summary);
-                    runOnUiThread(() -> mText.setText(sb + "\n\n" + summary));
+                    runOnUiThread(() -> mText.setText(head + "\n\n" + summary));
                 }
 
                 @Override
                 public void onError(long requestId, int code, String message) {
                     Log.w(TAG, "onError id=" + requestId + " code=" + code + " " + message);
+                    runOnUiThread(() -> mText.setText(
+                            head + "\n\n[error " + code + "] " + message));
                 }
             });
         } catch (RemoteException e) {
             mText.setText("调用失败: " + e);
+        } catch (Throwable t) {
+            mText.setText("异常: " + t);
         }
     }
 }

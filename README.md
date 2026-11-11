@@ -239,3 +239,83 @@ adb shell service list | grep -E 'agent$|agent_core'
 ```te
 type agent_data_file, file_type, data_file_type, core_data_file_type;
 ```
+
+---
+
+### 2026-11 第四轮:三层在真机上跑通
+
+#### 已实测通过
+
+```
+$ adb shell 'service list | grep -i agent'
+11	agent: [android.system.agent.IAgentService]      ← system_server
+12	agent_core: []                                    ← agentd
+
+$ adb shell 'ps -A | grep agent'
+system  1642  1  ...  S agentd                       ← 进程常驻
+
+$ adb shell 'getprop init.svc.agentd'
+running                                              ← 不再 restarting
+
+$ adb shell 'service call agent 1'
+Result: Parcel( 00000000 00000001 )                  ← getVersion()=1
+```
+
+应用进程:`u:r:platform_app:s0  com.android.agent`,启动不崩。
+
+#### 这一轮修掉的三个 bug
+
+| # | 缺失 | 症状 | 修复 |
+|---|---|---|---|
+| 1 | `core_data_file_type` | 编译期 neverallow | 给 `agent_data_file` 加属性 |
+| 2 | `binder_use(agentd)` | `agentd` 起来就退,`service list` 空 | `agentd.te` 加 `binder_use(agentd)` |
+| 3 | 自定义 `agent_app` domain 缺几十条权限 | 应用 NPE 死在 `ActivityThread.attach` | 退回默认 `priv_app` / `platform_app` |
+
+#### 关键教训
+
+**自定义 app domain 是坑。** 只给 `agent_service` 加了两条 `find`,
+结果连 `activity_service` 都找不到:
+
+```
+avc: denied { find } for scontext=u:r:agent_app:s0
+  tcontext=u:object_r:activity_service:s0
+```
+
+`ActivityThread.attach()` 拿 `IActivityManager` 为 null → NPE。
+
+一个 app domain 要补的权限是几十条,第一轮绝对不要做。
+
+**`ro.debuggable=0`。** LineageOS 的 userdebug 构建里 `ro.debuggable` 仍是 0,
+所以 `Build.IS_DEBUGGABLE` 是 false,不能用它做判断。
+
+#### 已经能用的验证命令
+
+```bash
+# 服务在不在
+adb shell 'service list | grep -i agent'
+
+# 直接调方法(不需要写客户端)
+adb shell 'service call agent 1'        # getVersion -> 1
+adb shell 'service call agent 2'        # getStatus -> 最后一位是 lastErrorCode
+
+# 应用崩溃现场
+adb shell 'am start -n com.android.agent/.AgentActivity'
+adb logcat -d | grep -A20 'FATAL EXCEPTION'
+
+# SELinux 拒绝
+adb logcat -d | grep 'avc.*agent'
+```
+
+#### 本轮最后一处修复(已编译,未刷)
+
+`MockEngine` 未 `load()` 就拒绝推理,所以第一次 `processText` 返回
+`NOT_READY`。已改成**惰性加载**:
+
+- `AgentService` 首次 `processText` 时先 `loadModel()`
+- 成功回调里接着 `parseIntent()`
+- 失败则回错,下次调用重新尝试
+
+同时修了 UI:原来只在成功回调里设文字,出错就是白屏。现在先显示状态,
+`onError` 也会把错误写上去。
+
+镜像:`system.img`(03:42)。**下次刷完就能看到 MockEngine 返回的意图 JSON。**

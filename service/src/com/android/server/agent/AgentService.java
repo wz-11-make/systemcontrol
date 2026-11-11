@@ -1,9 +1,13 @@
 package com.android.server.agent;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.provider.Settings;
 import android.system.agent.AgentStatus;
 import android.system.agent.IAgentCore;
 import android.system.agent.IAgentCoreCallback;
@@ -45,6 +49,12 @@ public class AgentService extends SystemService {
 
     private OpenAppExecutor mOpenApp;
 
+    /** 模型目录:DE 加密,解锁前就可用。 */
+    private static final String MODEL_DIR = "/data/misc/agent/models";
+
+    /** 引擎是否已加载。只在这里做一次性判断,不做同步等待。 */
+    private volatile boolean mModelReady = false;
+
     public AgentService(Context context) {
         super(context);
         mContext = context;
@@ -58,12 +68,45 @@ public class AgentService extends SystemService {
         // OpenAppExecutor 只持有 Context,真正的 PMS 查询发生在 execute() 时。
         mOpenApp = new OpenAppExecutor(mContext);
         Slog.i(TAG, "published binder service '" + SERVICE_NAME + "', executors ready");
+
+        // 用 BOOT_COMPLETED 广播而不是 onBootPhase(PHASE_BOOT_COMPLETED):
+        // 后者在 AMS.finishBooting() 里派发,而 AMS 的 systemReady 是在我们之前
+        // 排进队列的,时序不稳。广播是确定的。
+        try {
+            mContext.registerReceiver(new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    Slog.i(TAG, "boot completed (broadcast)");
+                    enableAdbAlways();
+                }
+            }, new IntentFilter(Intent.ACTION_BOOT_COMPLETED));
+        } catch (Throwable t) {
+            Slog.w(TAG, "register boot receiver failed", t);
+        }
     }
 
     @Override
     public void onBootPhase(int phase) {
         if (phase == PHASE_BOOT_COMPLETED) {
-            Slog.i(TAG, "boot completed");
+            Slog.i(TAG, "boot completed (phase)");
+            enableAdbAlways();
+        }
+    }
+
+    /**
+     * 开机强制打开 USB 调试。
+     *
+     * adb 是排查 agentd 崩溃、avc denied 的唯一手段,这里直接常开,不设条件。
+     * system_server 是 uid 1000,WRITE_SECURE_SETTINGS 天然放行。
+     * 以后要发布正式版时删掉这个方法即可。
+     */
+    private void enableAdbAlways() {
+        try {
+            Settings.Global.putInt(mContext.getContentResolver(),
+                    Settings.Global.ADB_ENABLED, 1);
+            Slog.w(TAG, "forced Settings.Global.ADB_ENABLED=1");
+        } catch (Throwable t) {
+            Slog.w(TAG, "force adb failed", t);
         }
     }
 
@@ -149,6 +192,63 @@ public class AgentService extends SystemService {
                 return;
             }
 
+            // 引擎必须先 load 才能推理。agentd 是 late_start,而且模型加载可能要几秒,
+            // 所以这里做一次惰性加载:没加载过就先 loadModel,成功后再 parseIntent。
+            if (!mModelReady) {
+                requestModelLoad(core, requestId, text, cb);
+                return;
+            }
+            doParseIntent(core, requestId, text, cb);
+        }
+
+        /**
+         * 惰性加载模型。成功后自动接上 parseIntent。
+         * 加载失败就直接回错,不重试 —— 重试由下一次 processText 自然触发。
+         */
+        private void requestModelLoad(IAgentCore core, long requestId, String text,
+                                      IAgentServiceCallback cb) {
+            Slog.i(TAG, "loading model from " + MODEL_DIR);
+            final IAgentCoreCallback.Stub loadCb = new IAgentCoreCallback.Stub() {
+                @Override
+                public void onModelLoaded(long id, int result, String message) {
+                    if (result == AgentPolicy.ERR_OK) {
+                        mModelReady = true;
+                        Slog.i(TAG, "model loaded, retrying is up to caller");
+                    } else {
+                        mModelReady = false;
+                        Slog.w(TAG, "loadModel failed: "
+                                + AgentPolicy.errorName(result) + " " + message);
+                        replyError(cb, requestId, result, "loadModel: " + message);
+                        return;
+                    }
+                    // 加载成功:把这次请求继续做完
+                    final IAgentCore c = getCore();
+                    if (c != null) {
+                        doParseIntent(c, requestId, text, cb);
+                    }
+                }
+
+                @Override
+                public void onError(long id, int code, String message) {
+                    mModelReady = false;
+                    replyError(cb, requestId, code, "loadModel: " + message);
+                }
+
+                @Override public void onPong(long id, String message) { }
+                @Override public void onIntent(long id, String json, float conf) { }
+                @Override public void onTranscript(long id, String text, boolean isFinal) { }
+            };
+
+            try {
+                core.loadModel(requestId, MODEL_DIR, loadCb);
+            } catch (RemoteException e) {
+                Slog.w(TAG, "loadModel failed", e);
+                replyError(cb, requestId, AgentPolicy.ERR_MODEL_LOAD, "agentd 调用失败");
+            }
+        }
+
+        private void doParseIntent(IAgentCore core, long requestId, String text,
+                                   IAgentServiceCallback cb) {
             final IAgentCoreCallback.Stub coreCb = new IAgentCoreCallback.Stub() {
                 @Override
                 public void onIntent(long id, String intentJson, float confidence) {
