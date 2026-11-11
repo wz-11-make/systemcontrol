@@ -1,8 +1,12 @@
 package com.android.server.agent;
 
 import android.content.Context;
+import android.os.IBinder;
 import android.os.RemoteException;
+import android.os.ServiceManager;
 import android.system.agent.AgentStatus;
+import android.system.agent.IAgentCore;
+import android.system.agent.IAgentCoreCallback;
 import android.system.agent.IAgentService;
 import android.system.agent.IAgentServiceCallback;
 import android.util.Slog;
@@ -18,15 +22,27 @@ import com.android.server.agent.exec.OpenAppExecutor;
  *  - 不在 binder 线程上做任何可能阻塞的事
  *  - 任何异常自己吞掉并记日志 —— 这里崩了就是整机软重启
  *
- * 骨架阶段:只注册服务 + 返回状态 + 一个假的结果回调。
+ * 与 agentd 的关系:只通过 IAgentCore 通信,拿到的是一段意图 JSON,
+ * 这里负责把它翻译成动作、做风险分级、必要时弹确认。
  */
 public class AgentService extends SystemService {
     private static final String TAG = "AgentService";
     private static final String SERVICE_NAME = "agent";
+    private static final String CORE_SERVICE_NAME = "agent_core";
     private static final int VERSION = 1;
+
+    /** 和 agentd 的 Engine.h 保持一致。 */
+    private static final int MODEL_STATE_UNLOADED = 0;
+    private static final int MODEL_STATE_LOADING = 1;
+    private static final int MODEL_STATE_READY = 2;
+    private static final int MODEL_STATE_ERROR = 3;
 
     private final Context mContext;
     private final AgentBinder mBinder = new AgentBinder();
+
+    private final Object mCoreLock = new Object();
+    private IAgentCore mCore;
+
     private OpenAppExecutor mOpenApp;
 
     public AgentService(Context context) {
@@ -48,12 +64,64 @@ public class AgentService extends SystemService {
         }
     }
 
-    private static AgentStatus makeStatus(int state, int modelState) {
-        final AgentStatus s = new AgentStatus();
-        s.version = VERSION;
-        s.state = state;
-        s.modelState = modelState;
-        return s;
+    /**
+     * 拿 agentd 的 binder,并挂死亡通知。
+     *
+     * agentd 比 AgentService 起得晚(late_start),所以第一次拿不到是正常的,
+     * 调用方应该重试而不是报错。
+     */
+    private IAgentCore getCore() {
+        synchronized (mCoreLock) {
+            if (mCore != null && mCore.asBinder().isBinderAlive()) {
+                return mCore;
+            }
+            mCore = null;
+
+            final IBinder b = ServiceManager.getService(CORE_SERVICE_NAME);
+            if (b == null) {
+                return null;
+            }
+            try {
+                b.linkToDeath(() -> {
+                    synchronized (mCoreLock) {
+                        mCore = null;
+                    }
+                    Slog.w(TAG, "agentd died");
+                }, 0);
+            } catch (RemoteException e) {
+                Slog.w(TAG, "linkToDeath failed", e);
+                return null;
+            }
+            mCore = IAgentCore.Stub.asInterface(b);
+            Slog.i(TAG, "connected to agentd");
+            return mCore;
+        }
+    }
+
+    /** 组一个 status:核心是 agentd 的状态,叠加我们自己的。 */
+    private AgentStatus buildStatus() {
+        final IAgentCore core = getCore();
+        if (core == null) {
+            final AgentStatus s = new AgentStatus();
+            s.version = VERSION;
+            s.state = 1;
+            s.modelState = MODEL_STATE_UNLOADED;
+            s.queueDepth = 0;
+            s.modelBytes = 0;
+            s.lastErrorCode = AgentPolicy.ERR_NOT_READY;
+            return s;
+        }
+        try {
+            return core.getStatus();
+        } catch (RemoteException e) {
+            Slog.w(TAG, "getStatus from agentd failed", e);
+            final AgentStatus s = new AgentStatus();
+            s.version = VERSION;
+            s.state = 3;
+            s.modelState = MODEL_STATE_ERROR;
+            s.lastErrorCode = AgentPolicy.ERR_NOT_READY;
+            return s;
+        }
     }
 
     private final class AgentBinder extends IAgentService.Stub {
@@ -64,35 +132,86 @@ public class AgentService extends SystemService {
 
         @Override
         public AgentStatus getStatus() {
-            return makeStatus(1, 0);
+            return buildStatus();
         }
 
         @Override
         public void processText(long requestId, String text, String origin,
                                 IAgentServiceCallback cb) {
-            Slog.i(TAG, "processText id=" + requestId + " origin=" + origin + " text=" + text);
-            // 骨架:先证明链路通,不做真实推理
-            final int risk = AgentPolicy.RISK_L0_READ_ONLY;
-            try {
-                if (cb != null) {
-                    cb.onResult(requestId,
-                            "skeleton: received \"" + text + "\"",
-                            AgentPolicy.requiresConfirmation(risk));
+            Slog.i(TAG, "processText id=" + requestId + " origin=" + origin);
+
+            final IAgentCore core = getCore();
+            if (core == null) {
+                replyError(cb, requestId, AgentPolicy.ERR_NOT_READY, "agentd 未就绪");
+                return;
+            }
+
+            final IAgentCoreCallback.Stub coreCb = new IAgentCoreCallback.Stub() {
+                @Override
+                public void onIntent(long id, String intentJson, float confidence) {
+                    Slog.i(TAG, "intent id=" + id + " conf=" + confidence + " " + intentJson);
+                    // 骨架:直接把意图回给 UI。
+                    // 下一步在这里:解析 intentJson -> 查 AgentActionRegistry
+                    //             -> 风险分级 -> 需要确认就走 confirm()
+                    //             -> 否则 executor.execute()
+                    replyResult(cb, requestId, intentJson, false);
                 }
+
+                @Override
+                public void onError(long id, int code, String message) {
+                    Slog.w(TAG, "agentd error id=" + id + " " + AgentPolicy.errorName(code)
+                            + " " + message);
+                    replyError(cb, requestId, code, message);
+                }
+
+                @Override public void onPong(long id, String message) { /* unused */ }
+                @Override public void onModelLoaded(long id, int result, String message) { }
+                @Override public void onTranscript(long id, String text, boolean isFinal) { }
+            };
+
+            try {
+                core.parseIntent(requestId, text, "{}", coreCb);
             } catch (RemoteException e) {
-                Slog.w(TAG, "callback died", e);
+                Slog.w(TAG, "parseIntent failed", e);
+                replyError(cb, requestId, AgentPolicy.ERR_INFERENCE, "agentd 调用失败");
             }
         }
 
         @Override
         public boolean cancel(long requestId) {
-            Slog.i(TAG, "cancel id=" + requestId);
-            return true;
+            final IAgentCore core = getCore();
+            if (core == null) return false;
+            try {
+                core.cancel(requestId);
+                return true;
+            } catch (RemoteException e) {
+                Slog.w(TAG, "cancel failed", e);
+                return false;
+            }
         }
 
         @Override
         public void confirm(long requestId, boolean approved) {
             Slog.i(TAG, "confirm id=" + requestId + " approved=" + approved);
+        }
+    }
+
+    private static void replyResult(IAgentServiceCallback cb, long id, String summary,
+                                    boolean needsConfirm) {
+        if (cb == null) return;
+        try {
+            cb.onResult(id, summary, needsConfirm);
+        } catch (RemoteException e) {
+            Slog.w(TAG, "callback died", e);
+        }
+    }
+
+    private static void replyError(IAgentServiceCallback cb, long id, int code, String msg) {
+        if (cb == null) return;
+        try {
+            cb.onError(id, code, msg);
+        } catch (RemoteException e) {
+            Slog.w(TAG, "callback died", e);
         }
     }
 }

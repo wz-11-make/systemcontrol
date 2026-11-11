@@ -1,12 +1,14 @@
 #include "Engine.h"
-#include <android-base/logging.h>
 
-bool Engine::load(const std::string& path) {
-    LOG(INFO) << "Engine::load stub, path=" << path;
-    mReady = true;
-    return true;
-}
+#include "MockEngine.h"
+#ifdef AGENT_WITH_LLAMA
+#include "LlamaEngine.h"
+#endif
 
-void Engine::unload() {
-    mReady = false;
+std::unique_ptr<Engine> Engine::create() {
+#ifdef AGENT_WITH_LLAMA
+    return std::unique_ptr<Engine>(new LlamaEngine());
+#else
+    return std::unique_ptr<Engine>(new MockEngine());
+#endif
 }

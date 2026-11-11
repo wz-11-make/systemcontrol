@@ -5,16 +5,24 @@ cc_binary {
         "main.cpp",
         "AgentCoreService.cpp",
         "Engine.cpp",
+        "MockEngine.cpp",
+        "LlamaEngine.cpp",
+        "Worker.cpp",
     ],
     cflags: [
         "-Wall",
         "-Werror",
+        // 接上 llama.cpp 之后打开:
+        // "-DAGENT_WITH_LLAMA",
     ],
     shared_libs: [
         "android.system.agent.control-ndk",
         "libbase",
         "libbinder_ndk",
         "liblog",
+        // 接上 llama.cpp 之后补:
+        // "libllama",
+        // "libggml",
     ],
     init_rc: ["agentd.rc"],
     strip: { none: true },

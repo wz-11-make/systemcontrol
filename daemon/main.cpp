@@ -11,6 +11,7 @@ static constexpr char kServiceName[] = "agent_core";
 int main() {
     android::base::InitLogging(nullptr, android::base::StderrLogger);
 
+    // binder 线程池只负责收发,推理全在 AgentCoreService 的 worker 线程上
     ABinderProcess_setThreadPoolMaxThreadCount(4);
     ABinderProcess_startThreadPool();
 

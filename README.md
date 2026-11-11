@@ -16,6 +16,72 @@ Agent.apk (UI)  ──IAgentService──►  AgentService (system_server)
 | `daemon/` | 推理 | `/system/bin/agentd` |
 | `sepolicy/` | SELinux | `/system/etc/selinux/` |
 
+## daemon/ 内部结构(推理服务)
+
+```
+main.cpp              addService("agent_core");binder 线程池 = 4
+AgentCoreService.*    binder 层:参数校验 / 入队 / 取消表 / 回调派发
+Worker.*              单线程串行队列。binder 线程只入队,立刻返回
+Engine.h              抽象接口,纯 C++,不认识 binder/JNI/Android
+MockEngine.*          规则引擎,产出符合契约的意图 JSON(当前默认)
+LlamaEngine.*         llama.cpp 实现,pimpl 隔离,-DAGENT_WITH_LLAMA 切换
+```
+
+### 数据流
+
+```
+Agent.apk            AgentService              agentd
+   │                     │                       │
+   │ processText(id,txt) │                       │
+   ├────────────────────►│                       │
+   │                     │ parseIntent(id,txt)   │
+   │                     ├──────────────────────►│  Worker 线程
+   │                     │                       │  ┌──────────────┐
+   │                     │                       │  │MockEngine /  │
+   │                     │                       │  │LlamaEngine   │
+   │                     │                       │  └──────┬───────┘
+   │                     │   onIntent(id, json)  │◄────────┘
+   │  onResult(id, json) │◄──────────────────────┤
+   │◄────────────────────┤                       │
+```
+
+### 为什么 binder 层必须入队
+
+`parseIntent` 可能要跑几秒(尤其接了 1.5B 模型)。
+如果在 binder 线程里直接跑:
+
+- 4 个 binder 线程会被占满,AgentService 侧全部超时
+- 没法 `cancel()` —— 调用已经被卡住了
+
+所以 binder 方法只做「校验 + post」,立刻返回;真正的推理在 worker 上串行跑。
+
+### 取消
+
+`cancel(id)` 只是往 `mCancelled` 里插一条。worker 在**开始执行前**检查,
+已取消就直接跳过并清理。接 llama.cpp 之后要再加 abort callback 支持中途打断。
+
+### 切换引擎
+
+`daemon/Android.bp` 里:
+
+```bp
+cflags: ["-DAGENT_WITH_LLAMA"],
+shared_libs: ["libllama", "libggml"],
+```
+
+其余代码零改动。`MockEngine` 里那张关键字表可以保留当"快速路径"
+(规则命中就不必惊动模型)。
+
+### 当前的能力边界
+
+| 能力 | 状态 |
+|---|---|
+| 意图分类 | ✅ MockEngine 规则版可用 |
+| 意图分类(真模型) | ⏸ `LlamaEngine::parseIntent` 待接 grammar 约束采样 |
+| 语音识别 | ❌ `kErrUnsupported`(sherpa-onnx 未接) |
+| 取消 | ✅ 入队前生效 |
+| 中途打断 | ❌ 需要 llama.cpp abort callback |
+
 ## 现在还缺的三处外部接线
 
 骨架本身能编(`m Agent` / `m agentd` / `m android.system.agent.control-ndk`),
@@ -144,3 +210,19 @@ virtual ::ndk::ScopedAStatus ping(int64_t in_requestId,
         const std::shared_ptr<::aidl::android::system::agent::IAgentCoreCallback>& in_cb) = 0;
 virtual ::ndk::ScopedAStatus cancel(int64_t in_requestId) = 0;
 ```
+
+### 2026-11 第二轮:推理服务写完
+
+```
+m android.system.agent.control-ndk android.system.agent.control-java   ✅
+m agentd                                                               ✅ (54 targets)
+m agent-service                                                        ✅
+m Agent                                                                ✅
+```
+
+新增/改动:
+
+- `IAgentCore` 增加 `loadModel / unloadModel / transcribe / parseIntent`
+- `AgentStatus` 增加 `queueDepth / modelBytes / lastErrorCode`
+- `daemon/` 从 3 个文件扩到 9 个:Worker、Engine 抽象、Mock、Llama
+- `AgentService` 真正连上 `agent_core`,带死亡通知与重连
